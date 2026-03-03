@@ -30,6 +30,24 @@ function Normalize-CsvHeaderName {
     return ($HeaderName -replace '^\uFEFF', '').Trim().Trim('"')
 }
 
+function Resolve-FileNameFromCsvValue {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Value
+    )
+
+    $trimmedValue = $Value.Trim().Trim('"')
+
+    if ([string]::IsNullOrWhiteSpace($trimmedValue)) {
+        return ''
+    }
+
+    # Convert to only the file name so CSV values can contain relative paths or UNC/full paths.
+    $fileName = [System.IO.Path]::GetFileName($trimmedValue)
+
+    return $fileName.Trim()
+}
+
 function Get-CsvDelimiter {
     param (
         [Parameter(Mandatory = $true)]
@@ -124,7 +142,7 @@ $resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
 
 # Extract file names from the CSV
 $csvFileNames = $rows |
-    ForEach-Object { [string]($_.$resolvedFileNameColumn).Trim() } |
+    ForEach-Object { Resolve-FileNameFromCsvValue -Value ([string]($_.$resolvedFileNameColumn)) } |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
 $totalCsvRows            = $rows.Count
