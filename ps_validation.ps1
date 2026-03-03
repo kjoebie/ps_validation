@@ -142,14 +142,15 @@ if (-not $headerMap.ContainsKey($normalizedRequestedColumn)) {
 $resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
 
 
-# Extract file names from the CSV
-$csvFileNames = $rows |
+# Extract file names from the CSV.
+# Wrap in @(...) so a single result stays an array and is not treated as a string.
+$csvFileNames = @($rows |
     ForEach-Object { Resolve-FileNameFromCsvValue -Value ([string]($_.$resolvedFileNameColumn)) } |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
 $totalCsvRows            = $rows.Count
 $totalCsvFileNames       = $csvFileNames.Count
-$uniqueCsvFileNames      = $csvFileNames | Sort-Object -Unique
+$uniqueCsvFileNames      = @($csvFileNames | Sort-Object -Unique)
 $totalUniqueCsvFileNames = $uniqueCsvFileNames.Count
 
 # ----------------------------
