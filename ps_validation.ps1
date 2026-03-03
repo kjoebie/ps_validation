@@ -316,21 +316,30 @@ $log | Export-Csv -LiteralPath $logPath -NoTypeInformation -Encoding UTF8
 # Summary
 # ----------------------------
 
+$summaryPath = Join-Path -Path $csvFolder -ChildPath "run-summary.txt"
+$summaryLines = @(
+    "Summary"
+    "----------------------------------------"
+    "CSV file                         : $csvPath"
+    "CSV delimiter used               : $effectiveDelimiter"
+    "CSV column requested             : $fileNameColumn"
+    "CSV column resolved              : $resolvedFileNameColumn"
+    "Total rows in CSV                : $totalCsvRows"
+    "File names found in CSV          : $totalCsvFileNames"
+    "Unique file names in CSV         : $totalUniqueCsvFileNames"
+    "Files found in source folder     : $totalSourceFiles"
+    "CSV file names matched           : $matchedCsvNames"
+    "CSV file names not found         : $notFoundCsvNames"
+    "Files moved                      : $movedFilesCount"
+    "CSV names with multiple matches  : $multiMatchNameCount"
+    "Errors during move               : $errorsCount"
+    "Log file                         : $logPath"
+    "----------------------------------------"
+)
+
 Write-Host ""
-Write-Host "Summary" -ForegroundColor Green
-Write-Host "----------------------------------------"
-Write-Host "CSV file                         : $csvPath"
-Write-Host "CSV delimiter used               : $effectiveDelimiter"
-Write-Host "CSV column requested             : $fileNameColumn"
-Write-Host "CSV column resolved              : $resolvedFileNameColumn"
-Write-Host "Total rows in CSV                : $totalCsvRows"
-Write-Host "File names found in CSV          : $totalCsvFileNames"
-Write-Host "Unique file names in CSV         : $totalUniqueCsvFileNames"
-Write-Host "Files found in source folder     : $totalSourceFiles"
-Write-Host "CSV file names matched           : $matchedCsvNames"
-Write-Host "CSV file names not found         : $notFoundCsvNames"
-Write-Host "Files moved                      : $movedFilesCount"
-Write-Host "CSV names with multiple matches  : $multiMatchNameCount"
-Write-Host "Errors during move               : $errorsCount"
-Write-Host "Log file                         : $logPath"
-Write-Host "----------------------------------------"
+Write-Host $summaryLines[0] -ForegroundColor Green
+$summaryLines | Select-Object -Skip 1 | ForEach-Object { Write-Host $_ }
+
+$summaryLines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+Write-Host "Summary file                     : $summaryPath"
