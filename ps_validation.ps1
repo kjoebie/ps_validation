@@ -267,8 +267,6 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
             Message          = "File name found in source folder ($($matches.Count) match(es))"
         })
 
-        Write-Host "FOUND: '$fileName' ($($matches.Count) match(es))" -ForegroundColor DarkCyan
-
         if ($matches.Count -gt 1) {
             $multiMatchNameCount++
         }
@@ -289,7 +287,6 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
                     Message          = "File moved successfully"
                 })
 
-                Write-Host "MOVED: '$($match.FullName)' -> '$destinationPath'" -ForegroundColor Green
             }
             catch {
                 $errorsCount++
