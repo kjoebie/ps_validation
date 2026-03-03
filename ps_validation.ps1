@@ -33,6 +33,8 @@ function Normalize-CsvHeaderName {
 function Resolve-FileNameFromCsvValue {
     param (
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [AllowNull()]
         [string]$Value
     )
 
