@@ -257,6 +257,16 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
         $matches = $fileIndex[$fileName]
         $matchedCsvNames++
 
+        $log.Add([PSCustomObject]@{
+            FileName         = $fileName
+            Status           = "Found"
+            SourcePath       = $null
+            DestinationPath  = $null
+            Message          = "File name found in source folder ($($matches.Count) match(es))"
+        })
+
+        Write-Host "FOUND: '$fileName' ($($matches.Count) match(es))" -ForegroundColor DarkCyan
+
         if ($matches.Count -gt 1) {
             $multiMatchNameCount++
         }
@@ -276,6 +286,8 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
                     DestinationPath  = $destinationPath
                     Message          = "File moved successfully"
                 })
+
+                Write-Host "MOVED: '$($match.FullName)' -> '$destinationPath'" -ForegroundColor Green
             }
             catch {
                 $errorsCount++
@@ -287,6 +299,8 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
                     DestinationPath  = $null
                     Message          = $_.Exception.Message
                 })
+
+                Write-Warning "MOVE FAILED: '$($match.FullName)'. Error: $($_.Exception.Message)"
             }
         }
     }
@@ -300,6 +314,8 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
             DestinationPath  = $null
             Message          = "File name not found in source folder"
         })
+
+        Write-Warning "NOT FOUND: '$fileName'"
     }
 }
 
