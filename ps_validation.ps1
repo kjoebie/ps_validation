@@ -5,16 +5,64 @@
 
 $csvFolder = "\\ysvvstore11\FS_YSL_YFB4-tijdelijk\Albert\Infectie preventie"
 $sourceFolder = "\\ysvvstore11\FS_YSL_YFB4-nietmedisch\FS_YSL_YFB4-nietmedisch\Hans\Personeelsdossier"
-$destinationFolder = "\\ysvvstore11\FS_YSL_YFB4-medisch\FS_YSL_YFB4-medisch\Infectie Preventie\Medewerkers"
-$csvFileName        = "Infectie Preventie - Medewerker - VDMW - vaccinatie documenten.csv"
+$destinationFolder = "\\ysvvstore11\FS_YSL_YFB4-medisch\FS_YSL_YFB4-medisch\Infectie Preventie\Onbekende Medewerkers"
+$csvFileName        = "Infectie Preventie - Onbekende Medewerker - VD - vaccienatie documenten.csv"
 
-# Set the CSV delimiter.
+# Set the CSV delimiter.S
 # In Dutch CSV files this is often ';'
 $csvDelimiter       = ';'
+
+# Try to auto-detect delimiter from the header if possible.
+# Falls back to $csvDelimiter when detection is inconclusive.
+$autoDetectDelimiter = $true
 
 # Set the CSV column that contains the file names.
 # Leave empty ('') to automatically use the first column.
 $fileNameColumn     = 'file'
+
+function Normalize-CsvHeaderName {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$HeaderName
+    )
+
+    # Remove UTF-8 BOM and surrounding spaces/quotes from header names.
+    return ($HeaderName -replace '^\uFEFF', '').Trim().Trim('"')
+}
+
+function Get-CsvDelimiter {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FallbackDelimiter
+    )
+
+    $firstLine = Get-Content -LiteralPath $Path -TotalCount 1 -ErrorAction Stop
+
+    if ([string]::IsNullOrWhiteSpace($firstLine)) {
+        return $FallbackDelimiter
+    }
+
+    $candidates = @(';', ',', "`t", '|')
+    $bestDelimiter = $FallbackDelimiter
+    $bestScore = -1
+
+    foreach ($candidate in $candidates) {
+        $score = ($firstLine.ToCharArray() | Where-Object { $_ -eq $candidate }).Count
+        if ($score -gt $bestScore) {
+            $bestScore = $score
+            $bestDelimiter = $candidate
+        }
+    }
+
+    if ($bestScore -le 0) {
+        return $FallbackDelimiter
+    }
+
+    return $bestDelimiter
+}
 
 # ----------------------------
 # Build paths and validate
@@ -38,7 +86,14 @@ if (-not (Test-Path -LiteralPath $destinationFolder)) {
 # Import CSV
 # ----------------------------
 
-$rows = Import-Csv -LiteralPath $csvPath -Delimiter $csvDelimiter
+$effectiveDelimiter = if ($autoDetectDelimiter) {
+    Get-CsvDelimiter -Path $csvPath -FallbackDelimiter $csvDelimiter
+}
+else {
+    $csvDelimiter
+}
+
+$rows = Import-Csv -LiteralPath $csvPath -Delimiter $effectiveDelimiter
 
 if (-not $rows -or $rows.Count -eq 0) {
     throw "The CSV file is empty."
@@ -49,13 +104,27 @@ if ([string]::IsNullOrWhiteSpace($fileNameColumn)) {
     $fileNameColumn = $rows[0].PSObject.Properties.Name[0]
 }
 
-if ($fileNameColumn -notin $rows[0].PSObject.Properties.Name) {
-    throw "Column '$fileNameColumn' was not found in the CSV."
+$headerMap = @{}
+foreach ($header in $rows[0].PSObject.Properties.Name) {
+    $normalizedHeader = Normalize-CsvHeaderName -HeaderName $header
+    if (-not $headerMap.ContainsKey($normalizedHeader)) {
+        $headerMap[$normalizedHeader] = $header
+    }
 }
+
+$normalizedRequestedColumn = Normalize-CsvHeaderName -HeaderName $fileNameColumn
+
+if (-not $headerMap.ContainsKey($normalizedRequestedColumn)) {
+    $availableColumns = $rows[0].PSObject.Properties.Name -join ', '
+    throw "Column '$fileNameColumn' was not found in the CSV. Available columns: $availableColumns. Delimiter used: '$effectiveDelimiter'."
+}
+
+$resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
+
 
 # Extract file names from the CSV
 $csvFileNames = $rows |
-    ForEach-Object { [string]($_.$fileNameColumn).Trim() } |
+    ForEach-Object { [string]($_.$resolvedFileNameColumn).Trim() } |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
 $totalCsvRows            = $rows.Count
@@ -233,7 +302,9 @@ Write-Host ""
 Write-Host "Summary" -ForegroundColor Green
 Write-Host "----------------------------------------"
 Write-Host "CSV file                         : $csvPath"
-Write-Host "CSV column used                  : $fileNameColumn"
+Write-Host "CSV delimiter used               : $effectiveDelimiter"
+Write-Host "CSV column requested             : $fileNameColumn"
+Write-Host "CSV column resolved              : $resolvedFileNameColumn"
 Write-Host "Total rows in CSV                : $totalCsvRows"
 Write-Host "File names found in CSV          : $totalCsvFileNames"
 Write-Host "Unique file names in CSV         : $totalUniqueCsvFileNames"
