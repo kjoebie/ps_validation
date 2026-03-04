@@ -139,9 +139,9 @@ function New-DestinationFileNameIndex {
     }
 
     # Return as a single scalar object.
-    # Without the unary comma, PowerShell can enumerate HashSet values on output,
-    # and an empty set would be returned as $null to the caller.
-    return ,$existingNames
+    # -NoEnumerate prevents HashSet values from being expanded into the pipeline,
+    # which can otherwise result in $null/empty-collection binding issues.
+    Write-Output -NoEnumerate $existingNames
 }
 
 function Get-UniqueDestinationPath {
@@ -332,6 +332,12 @@ $processStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $progressCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
 $destinationNamesIndex = New-DestinationFileNameIndex -Folder $destinationFolder
+$destinationNamesIndex = if ($destinationNamesIndex -is [System.Collections.Generic.HashSet[string]]) {
+    $destinationNamesIndex
+}
+else {
+    [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+}
 $destinationSuffixIndex = @{}
 
 for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
