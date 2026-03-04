@@ -138,7 +138,10 @@ function New-DestinationFileNameIndex {
         # If this fails we continue with an empty in-memory index.
     }
 
-    return $existingNames
+    # Return as a single scalar object.
+    # Without the unary comma, PowerShell can enumerate HashSet values on output,
+    # and an empty set would be returned as $null to the caller.
+    return ,$existingNames
 }
 
 function Get-UniqueDestinationPath {
