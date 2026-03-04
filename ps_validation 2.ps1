@@ -252,6 +252,7 @@ function Get-UniqueDestinationPath {
         [string]$FileName,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [System.Collections.Generic.HashSet[string]]$ExistingNames,
 
         [Parameter(Mandatory = $true)]
