@@ -597,7 +597,31 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
     }
 }
 
-foreach ($request in $salarisdossierRows) {
+$salarisdossierStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$salarisdossierProgressCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
+
+for ($si = 0; $si -lt $salarisdossierRows.Count; $si++) {
+    $request = $salarisdossierRows[$si]
+
+    $sProcessed = $si + 1
+    $sPercent   = [int](($sProcessed / [Math]::Max($salarisdossierRows.Count, 1)) * 100)
+
+    if ($salarisdossierProgressCheckpoint.Elapsed.TotalMilliseconds -ge 500 -or $sProcessed -eq 1 -or $sProcessed -eq $salarisdossierRows.Count) {
+        $sElapsed    = [Math]::Max($salarisdossierStopwatch.Elapsed.TotalSeconds, 1)
+        $sRate       = $sProcessed / $sElapsed
+        $sRemaining  = $salarisdossierRows.Count - $sProcessed
+        $sSecondsLeft = if ($sRate -gt 0) { [int]($sRemaining / $sRate) } else { -1 }
+
+        Write-Progress `
+            -Id 2 `
+            -Activity "Looking up and $actionVerbPresent Salarisdossier files" `
+            -Status "$sProcessed of $($salarisdossierRows.Count)" `
+            -PercentComplete $sPercent `
+            -SecondsRemaining $sSecondsLeft
+
+        $salarisdossierProgressCheckpoint.Restart()
+    }
+
     $ceaNummer = $request.CeaNummer
     $jaar = $request.ProductieJaar
     $periode = Get-NormalizedPeriod -PeriodValue $request.ProductiePeriode
