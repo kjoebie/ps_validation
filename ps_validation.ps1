@@ -23,7 +23,6 @@ $autoDetectDelimiter = $true
 # Set the CSV column that contains the file names.
 # Leave empty ('') to automatically use the first column.
 $fileNameColumn     = 'file'
-$copyMoveColumn     = 'copy/move'
 $salarisdossierValue = 'Salarisdossier'
 
 function Normalize-CsvHeaderName {
@@ -210,6 +209,29 @@ function New-DestinationFileNameIndex {
     Write-Output -NoEnumerate $existingNames
 }
 
+
+function Ensure-DestinationFileNameIndex {
+    param (
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $IndexCandidate
+    )
+
+    if ($IndexCandidate -is [System.Collections.Generic.HashSet[string]]) {
+        return $IndexCandidate
+    }
+
+    if ($IndexCandidate -is [System.Array] -and $IndexCandidate.Count -gt 0) {
+        foreach ($item in $IndexCandidate) {
+            if ($item -is [System.Collections.Generic.HashSet[string]]) {
+                return $item
+            }
+        }
+    }
+
+    return [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+}
+
 function Get-UniqueDestinationPath {
     param (
         [Parameter(Mandatory = $true)]
@@ -305,9 +327,12 @@ if (-not $headerMap.ContainsKey($normalizedRequestedColumn)) {
 $resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
 
 $resolvedCopyMoveColumn = $null
-$normalizedCopyMoveColumn = Normalize-CsvHeaderName -HeaderName $copyMoveColumn
-if ($headerMap.ContainsKey($normalizedCopyMoveColumn)) {
-    $resolvedCopyMoveColumn = $headerMap[$normalizedCopyMoveColumn]
+foreach ($knownHeaderName in @('copy/move', 'copymove')) {
+    $normalizedHeaderName = Normalize-CsvHeaderName -HeaderName $knownHeaderName
+    if ($headerMap.ContainsKey($normalizedHeaderName)) {
+        $resolvedCopyMoveColumn = $headerMap[$normalizedHeaderName]
+        break
+    }
 }
 
 # Split CSV rows: legacy (file-name based) versus Salarisdossier (folder-based).
@@ -441,13 +466,7 @@ $log = New-Object System.Collections.Generic.List[object]
 $processStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $progressCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
-$destinationNamesIndex = New-DestinationFileNameIndex -Folder $destinationFolder
-$destinationNamesIndex = if ($destinationNamesIndex -is [System.Collections.Generic.HashSet[string]]) {
-    $destinationNamesIndex
-}
-else {
-    [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-}
+$destinationNamesIndex = Ensure-DestinationFileNameIndex -IndexCandidate (New-DestinationFileNameIndex -Folder $destinationFolder)
 $destinationSuffixIndex = @{}
 
 for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
