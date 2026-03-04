@@ -1,3 +1,7 @@
+param (
+    [ValidateSet('Move', 'Copy')]
+    [string]$Action = 'Move'
+)
 
 # ----------------------------
 # Configuration
@@ -8,7 +12,7 @@ $sourceFolder = "\\ysvvstore11\FS_YSL_YFB4-nietmedisch\FS_YSL_YFB4-nietmedisch\H
 $destinationFolder = "\\ysvvstore11\FS_YSL_YFB4-medisch\FS_YSL_YFB4-medisch\Infectie Preventie\Onbekende Medewerkers"
 $csvFileName        = "Infectie Preventie - Onbekende Medewerker - VD - vaccienatie documenten.csv"
 
-# Set the CSV delimiter.S
+# Set the CSV delimiter.
 # In Dutch CSV files this is often ';'
 $csvDelimiter       = ';'
 
@@ -84,6 +88,29 @@ function Get-CsvDelimiter {
     return $bestDelimiter
 }
 
+function Get-UniqueDestinationPath {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Folder,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FileName
+    )
+
+    $baseName  = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    $extension = [System.IO.Path]::GetExtension($FileName)
+    $candidate = Join-Path -Path $Folder -ChildPath $FileName
+    $counter   = 1
+
+    while (Test-Path -LiteralPath $candidate) {
+        $newName   = "{0} ({1}){2}" -f $baseName, $counter, $extension
+        $candidate = Join-Path -Path $Folder -ChildPath $newName
+        $counter++
+    }
+
+    return $candidate
+}
+
 # ----------------------------
 # Build paths and validate
 # ----------------------------
@@ -141,7 +168,6 @@ if (-not $headerMap.ContainsKey($normalizedRequestedColumn)) {
 
 $resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
 
-
 # Extract file names from the CSV.
 # Wrap in @(...) so a single result stays an array and is not treated as a string.
 $csvFileNames = @($rows |
@@ -154,73 +180,55 @@ $uniqueCsvFileNames      = @($csvFileNames | Sort-Object -Unique)
 $totalUniqueCsvFileNames = $uniqueCsvFileNames.Count
 
 # ----------------------------
-# Read source folder files
+# Prepare lookup set (optimized for very large source trees)
+# ----------------------------
+
+$targetFileNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($fileName in $uniqueCsvFileNames) {
+    [void]$targetFileNames.Add($fileName)
+}
+
+# ----------------------------
+# Scan source files (streaming)
 # ----------------------------
 
 Write-Host ""
-Write-Host "Reading source folder files..." -ForegroundColor Cyan
+Write-Host "Scanning source folder files (streaming, optimized for very large file counts)..." -ForegroundColor Cyan
 
-# This loads all files first so we know the total count and can show accurate progress
-$sourceFiles = Get-ChildItem -LiteralPath $sourceFolder -Recurse -File
-$totalSourceFiles = $sourceFiles.Count
-
-# Build an index by file name for fast lookup
 $fileIndex = @{}
-$indexStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$totalSourceFiles = 0
+$scanCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
-for ($i = 0; $i -lt $totalSourceFiles; $i++) {
-    $file = $sourceFiles[$i]
+$enumerationOptions = [System.IO.EnumerationOptions]::new()
+$enumerationOptions.RecurseSubdirectories = $true
+$enumerationOptions.IgnoreInaccessible = $true
+$enumerationOptions.ReturnSpecialDirectories = $false
 
-    if (-not $fileIndex.ContainsKey($file.Name)) {
-        $fileIndex[$file.Name] = New-Object System.Collections.ArrayList
+foreach ($fullPath in [System.IO.Directory]::EnumerateFiles($sourceFolder, '*', $enumerationOptions)) {
+    $totalSourceFiles++
+
+    $name = [System.IO.Path]::GetFileName($fullPath)
+
+    if ($targetFileNames.Contains($name)) {
+        if (-not $fileIndex.ContainsKey($name)) {
+            $fileIndex[$name] = New-Object System.Collections.Generic.List[string]
+        }
+
+        $fileIndex[$name].Add($fullPath)
     }
 
-    [void]$fileIndex[$file.Name].Add($file)
+    if ($scanCheckpoint.Elapsed.TotalSeconds -ge 2) {
+        $foundUnique = $fileIndex.Keys.Count
+        Write-Progress `
+            -Id 1 `
+            -Activity "Scanning source files" `
+            -Status "Scanned: $totalSourceFiles | Matched unique names: $foundUnique of $totalUniqueCsvFileNames"
 
-    $processed = $i + 1
-    $percent   = [int](($processed / [Math]::Max($totalSourceFiles, 1)) * 100)
-
-    $elapsedSeconds = [Math]::Max($indexStopwatch.Elapsed.TotalSeconds, 1)
-    $ratePerSecond  = $processed / $elapsedSeconds
-    $remainingItems = $totalSourceFiles - $processed
-    $secondsLeft    = if ($ratePerSecond -gt 0) { [int]($remainingItems / $ratePerSecond) } else { -1 }
-
-    Write-Progress `
-        -Id 1 `
-        -Activity "Indexing source files" `
-        -Status "$processed of $totalSourceFiles" `
-        -PercentComplete $percent `
-        -SecondsRemaining $secondsLeft
-}
-
-Write-Progress -Id 1 -Activity "Indexing source files" -Completed
-
-# ----------------------------
-# Helper function
-# ----------------------------
-
-function Get-UniqueDestinationPath {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$Folder,
-
-        [Parameter(Mandatory = $true)]
-        [string]$FileName
-    )
-
-    $baseName  = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
-    $extension = [System.IO.Path]::GetExtension($FileName)
-    $candidate = Join-Path -Path $Folder -ChildPath $FileName
-    $counter   = 1
-
-    while (Test-Path -LiteralPath $candidate) {
-        $newName   = "{0} ({1}){2}" -f $baseName, $counter, $extension
-        $candidate = Join-Path -Path $Folder -ChildPath $newName
-        $counter++
+        $scanCheckpoint.Restart()
     }
-
-    return $candidate
 }
+
+Write-Progress -Id 1 -Activity "Scanning source files" -Completed
 
 # ----------------------------
 # Process CSV file names
@@ -231,9 +239,13 @@ Write-Host "Processing CSV file names..." -ForegroundColor Cyan
 
 $matchedCsvNames      = 0
 $notFoundCsvNames     = 0
-$movedFilesCount      = 0
+$processedFilesCount  = 0
 $multiMatchNameCount  = 0
 $errorsCount          = 0
+
+$actionVerbPastTense = if ($Action -eq 'Copy') { 'Copied' } else { 'Moved' }
+$actionVerbPresent   = if ($Action -eq 'Copy') { 'copying' } else { 'moving' }
+$logFileName         = if ($Action -eq 'Copy') { 'copy-log.csv' } else { 'move-log.csv' }
 
 $log = New-Object System.Collections.Generic.List[object]
 $processStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -251,7 +263,7 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
 
     Write-Progress `
         -Id 2 `
-        -Activity "Looking up and moving files" `
+        -Activity "Looking up and $actionVerbPresent files" `
         -Status "$processed of $totalUniqueCsvFileNames : $fileName" `
         -PercentComplete $percent `
         -SecondsRemaining $secondsLeft
@@ -272,20 +284,25 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
             $multiMatchNameCount++
         }
 
-        foreach ($match in $matches) {
+        foreach ($matchFullPath in $matches) {
             try {
-                $destinationPath = Get-UniqueDestinationPath -Folder $destinationFolder -FileName $match.Name
+                $destinationPath = Get-UniqueDestinationPath -Folder $destinationFolder -FileName $fileName
 
-                Move-Item -LiteralPath $match.FullName -Destination $destinationPath -Force
+                if ($Action -eq 'Copy') {
+                    Copy-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
+                }
+                else {
+                    Move-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
+                }
 
-                $movedFilesCount++
+                $processedFilesCount++
 
                 $log.Add([PSCustomObject]@{
                     FileName         = $fileName
-                    Status           = "Moved"
-                    SourcePath       = $match.FullName
+                    Status           = $actionVerbPastTense
+                    SourcePath       = $matchFullPath
                     DestinationPath  = $destinationPath
-                    Message          = "File moved successfully"
+                    Message          = "File $($actionVerbPastTense.ToLower()) successfully"
                 })
 
             }
@@ -295,12 +312,12 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
                 $log.Add([PSCustomObject]@{
                     FileName         = $fileName
                     Status           = "Error"
-                    SourcePath       = $match.FullName
+                    SourcePath       = $matchFullPath
                     DestinationPath  = $null
                     Message          = $_.Exception.Message
                 })
 
-                Write-Warning "MOVE FAILED: '$($match.FullName)'. Error: $($_.Exception.Message)"
+                Write-Warning "$($actionVerbPastTense.ToUpper()) FAILED: '$matchFullPath'. Error: $($_.Exception.Message)"
             }
         }
     }
@@ -319,13 +336,13 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
     }
 }
 
-Write-Progress -Id 2 -Activity "Looking up and moving files" -Completed
+Write-Progress -Id 2 -Activity "Looking up and $actionVerbPresent files" -Completed
 
 # ----------------------------
 # Export log
 # ----------------------------
 
-$logPath = Join-Path -Path $csvFolder -ChildPath "move-log.csv"
+$logPath = Join-Path -Path $csvFolder -ChildPath $logFileName
 $log | Export-Csv -LiteralPath $logPath -NoTypeInformation -Encoding UTF8
 
 # ----------------------------
@@ -336,6 +353,7 @@ $summaryPath = Join-Path -Path $csvFolder -ChildPath "run-summary.txt"
 $summaryLines = @(
     "Summary"
     "----------------------------------------"
+    "Action                           : $Action"
     "CSV file                         : $csvPath"
     "CSV delimiter used               : $effectiveDelimiter"
     "CSV column requested             : $fileNameColumn"
@@ -343,12 +361,12 @@ $summaryLines = @(
     "Total rows in CSV                : $totalCsvRows"
     "File names found in CSV          : $totalCsvFileNames"
     "Unique file names in CSV         : $totalUniqueCsvFileNames"
-    "Files found in source folder     : $totalSourceFiles"
+    "Files scanned in source folder   : $totalSourceFiles"
     "CSV file names matched           : $matchedCsvNames"
     "CSV file names not found         : $notFoundCsvNames"
-    "Files moved                      : $movedFilesCount"
+    "Files $($actionVerbPastTense.ToLower())                  : $processedFilesCount"
     "CSV names with multiple matches  : $multiMatchNameCount"
-    "Errors during move               : $errorsCount"
+    "Errors during $($actionVerbPastTense.ToLower())          : $errorsCount"
     "Log file                         : $logPath"
     "----------------------------------------"
 )
