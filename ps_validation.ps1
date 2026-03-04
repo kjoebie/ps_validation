@@ -88,6 +88,39 @@ function Get-CsvDelimiter {
     return $bestDelimiter
 }
 
+
+function Get-FilePathsRecursiveSafe {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$RootPath
+    )
+
+    $pendingDirectories = New-Object System.Collections.Generic.Stack[string]
+    $pendingDirectories.Push($RootPath)
+
+    while ($pendingDirectories.Count -gt 0) {
+        $currentDirectory = $pendingDirectories.Pop()
+
+        try {
+            foreach ($filePath in [System.IO.Directory]::EnumerateFiles($currentDirectory, '*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+                $filePath
+            }
+        }
+        catch {
+            # Ignore inaccessible directories/files and continue scanning.
+        }
+
+        try {
+            foreach ($subDirectory in [System.IO.Directory]::EnumerateDirectories($currentDirectory, '*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+                $pendingDirectories.Push($subDirectory)
+            }
+        }
+        catch {
+            # Ignore inaccessible directories and continue scanning.
+        }
+    }
+}
+
 function Get-UniqueDestinationPath {
     param (
         [Parameter(Mandatory = $true)]
@@ -199,12 +232,22 @@ $fileIndex = @{}
 $totalSourceFiles = 0
 $scanCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
-$enumerationOptions = [System.IO.EnumerationOptions]::new()
-$enumerationOptions.RecurseSubdirectories = $true
-$enumerationOptions.IgnoreInaccessible = $true
-$enumerationOptions.ReturnSpecialDirectories = $false
+$supportsEnumerationOptions = $null -ne ([type]::GetType('System.IO.EnumerationOptions', $false))
 
-foreach ($fullPath in [System.IO.Directory]::EnumerateFiles($sourceFolder, '*', $enumerationOptions)) {
+$filePathEnumerator = if ($supportsEnumerationOptions) {
+    $enumerationOptions = [System.IO.EnumerationOptions]::new()
+    $enumerationOptions.RecurseSubdirectories = $true
+    $enumerationOptions.IgnoreInaccessible = $true
+    $enumerationOptions.ReturnSpecialDirectories = $false
+
+    [System.IO.Directory]::EnumerateFiles($sourceFolder, '*', $enumerationOptions)
+}
+else {
+    Write-Host "System.IO.EnumerationOptions is not available. Using compatibility scan mode for older PowerShell/.NET versions." -ForegroundColor Yellow
+    Get-FilePathsRecursiveSafe -RootPath $sourceFolder
+}
+
+foreach ($fullPath in $filePathEnumerator) {
     $totalSourceFiles++
 
     $name = [System.IO.Path]::GetFileName($fullPath)
