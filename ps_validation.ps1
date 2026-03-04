@@ -121,27 +121,61 @@ function Get-FilePathsRecursiveSafe {
     }
 }
 
+function New-DestinationFileNameIndex {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Folder
+    )
+
+    $existingNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    try {
+        foreach ($existingPath in [System.IO.Directory]::EnumerateFiles($Folder, '*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+            [void]$existingNames.Add([System.IO.Path]::GetFileName($existingPath))
+        }
+    }
+    catch {
+        # If this fails we continue with an empty in-memory index.
+    }
+
+    return $existingNames
+}
+
 function Get-UniqueDestinationPath {
     param (
         [Parameter(Mandatory = $true)]
         [string]$Folder,
 
         [Parameter(Mandatory = $true)]
-        [string]$FileName
+        [string]$FileName,
+
+        [Parameter(Mandatory = $true)]
+        [System.Collections.Generic.HashSet[string]]$ExistingNames,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$NextSuffixByKey
     )
 
-    $baseName  = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
-    $extension = [System.IO.Path]::GetExtension($FileName)
-    $candidate = Join-Path -Path $Folder -ChildPath $FileName
-    $counter   = 1
+    if ($ExistingNames.Add($FileName)) {
+        return Join-Path -Path $Folder -ChildPath $FileName
+    }
 
-    while (Test-Path -LiteralPath $candidate) {
-        $newName   = "{0} ({1}){2}" -f $baseName, $counter, $extension
-        $candidate = Join-Path -Path $Folder -ChildPath $newName
+    $baseName   = [System.IO.Path]::GetFileNameWithoutExtension($FileName)
+    $extension  = [System.IO.Path]::GetExtension($FileName)
+    $suffixKey  = "$($baseName.ToLowerInvariant())|$($extension.ToLowerInvariant())"
+    $counter    = if ($NextSuffixByKey.ContainsKey($suffixKey)) { [int]$NextSuffixByKey[$suffixKey] } else { 1 }
+    $candidateName = ''
+
+    while ($true) {
+        $candidateName = "{0} ({1}){2}" -f $baseName, $counter, $extension
+        if ($ExistingNames.Add($candidateName)) {
+            break
+        }
         $counter++
     }
 
-    return $candidate
+    $NextSuffixByKey[$suffixKey] = $counter + 1
+    return Join-Path -Path $Folder -ChildPath $candidateName
 }
 
 # ----------------------------
@@ -292,6 +326,10 @@ $logFileName         = if ($Action -eq 'Copy') { 'copy-log.csv' } else { 'move-l
 
 $log = New-Object System.Collections.Generic.List[object]
 $processStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+$progressCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
+
+$destinationNamesIndex = New-DestinationFileNameIndex -Folder $destinationFolder
+$destinationSuffixIndex = @{}
 
 for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
     $fileName = $uniqueCsvFileNames[$i]
@@ -304,12 +342,16 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
     $remainingItems = $totalUniqueCsvFileNames - $processed
     $secondsLeft    = if ($ratePerSecond -gt 0) { [int]($remainingItems / $ratePerSecond) } else { -1 }
 
-    Write-Progress `
-        -Id 2 `
-        -Activity "Looking up and $actionVerbPresent files" `
-        -Status "$processed of $totalUniqueCsvFileNames : $fileName" `
-        -PercentComplete $percent `
-        -SecondsRemaining $secondsLeft
+    if ($progressCheckpoint.Elapsed.TotalMilliseconds -ge 500 -or $processed -eq 1 -or $processed -eq $totalUniqueCsvFileNames) {
+        Write-Progress `
+            -Id 2 `
+            -Activity "Looking up and $actionVerbPresent files" `
+            -Status "$processed of $totalUniqueCsvFileNames : $fileName" `
+            -PercentComplete $percent `
+            -SecondsRemaining $secondsLeft
+
+        $progressCheckpoint.Restart()
+    }
 
     if ($fileIndex.ContainsKey($fileName)) {
         $matches = $fileIndex[$fileName]
@@ -329,7 +371,11 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
 
         foreach ($matchFullPath in $matches) {
             try {
-                $destinationPath = Get-UniqueDestinationPath -Folder $destinationFolder -FileName $fileName
+                $destinationPath = Get-UniqueDestinationPath `
+                    -Folder $destinationFolder `
+                    -FileName $fileName `
+                    -ExistingNames $destinationNamesIndex `
+                    -NextSuffixByKey $destinationSuffixIndex
 
                 if ($Action -eq 'Copy') {
                     Copy-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
