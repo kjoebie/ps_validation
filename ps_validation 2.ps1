@@ -132,10 +132,11 @@ function New-SourcePeriodDirectoryIndex {
                 $pendingDirectories.Push($subDirectory)
 
                 $name = [System.IO.Path]::GetFileName($subDirectory)
-                if ($name -match '^.+-(\d{4})-(\d{2})$') {
-                    $year = $matches[1]
-                    $period = $matches[2]
-                    $key = "$year|$period"
+                if ($name -match '^(.+)-(\d{4})-(\d{2})$') {
+                    $ceaNummer = $matches[1]
+                    $year = $matches[2]
+                    $period = $matches[3]
+                    $key = "$ceaNummer|$year|$period"
 
                     if (-not $index.ContainsKey($key)) {
                         $index[$key] = New-Object System.Collections.Generic.List[string]
@@ -365,6 +366,7 @@ for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
         $salarisdossierRows.Add([PSCustomObject]@{
             RowIndex = $rowIndex + 1
             FileName = Resolve-FileNameFromCsvValue -Value ([string]($row.$resolvedFileNameColumn))
+            CeaNummer = ([string]$row.ceaNummer).Trim()
             ProductieJaar = ([string]$row.productieJaar).Trim()
             ProductiePeriode = ([string]$row.productiePeriode).Trim()
             ElementName = ([string]$row.ElementName).Trim()
@@ -577,19 +579,20 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
 }
 
 foreach ($request in $salarisdossierRows) {
+    $ceaNummer = $request.CeaNummer
     $jaar = $request.ProductieJaar
     $periode = Get-NormalizedPeriod -PeriodValue $request.ProductiePeriode
     $elementName = $request.ElementName
     $targetFileName = $request.FileName
 
-    if ([string]::IsNullOrWhiteSpace($jaar) -or [string]::IsNullOrWhiteSpace($periode) -or [string]::IsNullOrWhiteSpace($elementName)) {
+    if ([string]::IsNullOrWhiteSpace($ceaNummer) -or [string]::IsNullOrWhiteSpace($jaar) -or [string]::IsNullOrWhiteSpace($periode) -or [string]::IsNullOrWhiteSpace($elementName)) {
         $notFoundCsvNames++
         $log.Add([PSCustomObject]@{
             FileName         = "Row $($request.RowIndex)"
             Status           = "NotFound"
             SourcePath       = $null
             DestinationPath  = $null
-            Message          = "Salarisdossier row missing productieJaar/productiePeriode/ElementName"
+            Message          = "Salarisdossier row missing ceaNummer/productieJaar/productiePeriode/ElementName"
         })
         continue
     }
@@ -606,7 +609,7 @@ foreach ($request in $salarisdossierRows) {
         continue
     }
 
-    $periodKey = "$jaar|$periode"
+    $periodKey = "$ceaNummer|$jaar|$periode"
     if (-not $periodDirectoryIndex.ContainsKey($periodKey)) {
         $notFoundCsvNames++
         $log.Add([PSCustomObject]@{
