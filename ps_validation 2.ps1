@@ -348,6 +348,23 @@ foreach ($knownHeaderName in @('copy/move', 'copymove')) {
     }
 }
 
+# Detect whether the CSV has Salarisdossier columns so we can auto-classify
+# rows when there is no explicit copy/move column.
+$salarisdossierColumnNames = @('ceaNummer', 'productieJaar', 'productiePeriode', 'ElementName')
+$hasSalarisdossierColumns = $true
+foreach ($col in $salarisdossierColumnNames) {
+    $normalizedCol = Normalize-CsvHeaderName -HeaderName $col
+    if (-not $headerMap.ContainsKey($normalizedCol)) {
+        $hasSalarisdossierColumns = $false
+        break
+    }
+}
+
+$autoClassifyAsSalarisdossier = ($null -eq $resolvedCopyMoveColumn) -and $hasSalarisdossierColumns
+if ($autoClassifyAsSalarisdossier) {
+    Write-Host "No 'copy/move' column found but Salarisdossier columns detected. All rows will be treated as Salarisdossier." -ForegroundColor Yellow
+}
+
 # Split CSV rows: legacy (file-name based) versus Salarisdossier (folder-based).
 $legacyRows = New-Object System.Collections.Generic.List[object]
 $salarisdossierRows = New-Object System.Collections.Generic.List[object]
@@ -355,14 +372,16 @@ $salarisdossierRows = New-Object System.Collections.Generic.List[object]
 for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
     $row = $rows[$rowIndex]
 
-    $copyMoveValue = if ($null -ne $resolvedCopyMoveColumn) {
-        ([string]($row.$resolvedCopyMoveColumn)).Trim()
+    $isSalarisdossier = $false
+    if ($autoClassifyAsSalarisdossier) {
+        $isSalarisdossier = $true
     }
-    else {
-        ''
+    elseif ($null -ne $resolvedCopyMoveColumn) {
+        $copyMoveValue = ([string]($row.$resolvedCopyMoveColumn)).Trim()
+        $isSalarisdossier = $copyMoveValue -ieq $salarisdossierValue
     }
 
-    if ($copyMoveValue -ieq $salarisdossierValue) {
+    if ($isSalarisdossier) {
         $salarisdossierRows.Add([PSCustomObject]@{
             RowIndex = $rowIndex + 1
             FileName = Resolve-FileNameFromCsvValue -Value ([string]($row.$resolvedFileNameColumn))
