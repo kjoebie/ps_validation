@@ -472,11 +472,9 @@ foreach ($fullPath in $filePathEnumerator) {
 
 Write-Progress -Id 1 -Activity "Scanning source files" -Completed
 
-$periodDirectoryIndex = @{}
 if ($totalSalarisdossierRows -gt 0) {
     Write-Host ""
-    Write-Host "Building period directory index for Salarisdossier rows..." -ForegroundColor Cyan
-    $periodDirectoryIndex = New-SourcePeriodDirectoryIndex -RootPath $sourceFolder
+    Write-Host "Salarisdossier rows detected. Using direct path construction (ceaNummer-jaar-periode is a direct child of source folder)." -ForegroundColor Cyan
 }
 
 # ----------------------------
@@ -652,86 +650,57 @@ for ($si = 0; $si -lt $salarisdossierRows.Count; $si++) {
         continue
     }
 
-    $periodKey = "$ceaNummer|$jaar|$periode"
-    if (-not $periodDirectoryIndex.ContainsKey($periodKey)) {
+    # Construct the source path directly: sourceFolder\ceaNummer-jaar-periode\elementName\filename
+    $periodFolderName = "$ceaNummer-$jaar-$periode"
+    $candidatePath = [System.IO.Path]::Combine($sourceFolder, $periodFolderName, $elementName, $targetFileName)
+
+    if (-not [System.IO.File]::Exists($candidatePath)) {
         $notFoundCsvNames++
         $log.Add([PSCustomObject]@{
             FileName         = "Row $($request.RowIndex)"
             Status           = "NotFound"
-            SourcePath       = $null
+            SourcePath       = $candidatePath
             DestinationPath  = $null
-            Message          = "No source folder found for key $periodKey"
+            Message          = "File not found at expected path"
         })
         continue
     }
 
-    $rowHadMatch = $false
-    $candidatePeriodFolders = $periodDirectoryIndex[$periodKey]
+    $matchedCsvNames++
+    $destFileName = "$ceaNummer-$jaar-$periode-$targetFileName"
 
-    foreach ($periodFolder in $candidatePeriodFolders) {
-        $elementFolder = Join-Path -Path $periodFolder -ChildPath $elementName
-        if (-not (Test-Path -LiteralPath $elementFolder)) {
-            continue
+    try {
+        $destinationPath = Get-UniqueDestinationPath `
+            -Folder $destinationFolder `
+            -FileName $destFileName `
+            -ExistingNames $destinationNamesIndex `
+            -NextSuffixByKey $destinationSuffixIndex
+
+        if ($Action -eq 'Copy') {
+            [System.IO.File]::Copy($candidatePath, $destinationPath, $true)
+        }
+        else {
+            [System.IO.File]::Move($candidatePath, $destinationPath)
         }
 
-        # Look for the specific file from the CSV, not all files in the folder.
-        $candidatePath = Join-Path -Path $elementFolder -ChildPath $targetFileName
-        if (-not (Test-Path -LiteralPath $candidatePath)) {
-            continue
-        }
+        $processedFilesCount++
 
-        $rowHadMatch = $true
-
-        # Build a unique destination name: ceaNummer-jaar-periode-originalFileName
-        $destFileName = "$ceaNummer-$jaar-$periode-$targetFileName"
-
-        try {
-            $destinationPath = Get-UniqueDestinationPath `
-                -Folder $destinationFolder `
-                -FileName $destFileName `
-                -ExistingNames $destinationNamesIndex `
-                -NextSuffixByKey $destinationSuffixIndex
-
-            if ($Action -eq 'Copy') {
-                Copy-Item -LiteralPath $candidatePath -Destination $destinationPath -Force
-            }
-            else {
-                Move-Item -LiteralPath $candidatePath -Destination $destinationPath -Force
-            }
-
-            $processedFilesCount++
-
-            $log.Add([PSCustomObject]@{
-                FileName         = "Row $($request.RowIndex)"
-                Status           = $actionVerbPastTense
-                SourcePath       = $candidatePath
-                DestinationPath  = $destinationPath
-                Message          = "Salarisdossier file $($actionVerbPastTense.ToLower()) successfully"
-            })
-        }
-        catch {
-            $errorsCount++
-            $log.Add([PSCustomObject]@{
-                FileName         = "Row $($request.RowIndex)"
-                Status           = "Error"
-                SourcePath       = $candidatePath
-                DestinationPath  = $null
-                Message          = $_.Exception.Message
-            })
-        }
-    }
-
-    if ($rowHadMatch) {
-        $matchedCsvNames++
-    }
-    else {
-        $notFoundCsvNames++
         $log.Add([PSCustomObject]@{
             FileName         = "Row $($request.RowIndex)"
-            Status           = "NotFound"
-            SourcePath       = $null
+            Status           = $actionVerbPastTense
+            SourcePath       = $candidatePath
+            DestinationPath  = $destinationPath
+            Message          = "Salarisdossier file $($actionVerbPastTense.ToLower()) successfully"
+        })
+    }
+    catch {
+        $errorsCount++
+        $log.Add([PSCustomObject]@{
+            FileName         = "Row $($request.RowIndex)"
+            Status           = "Error"
+            SourcePath       = $candidatePath
             DestinationPath  = $null
-            Message          = "No files found for Salarisdossier row ($periodKey / $elementName / $targetFileName)"
+            Message          = $_.Exception.Message
         })
     }
 }
