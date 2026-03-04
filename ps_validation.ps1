@@ -23,6 +23,7 @@ $autoDetectDelimiter = $true
 # Set the CSV column that contains the file names.
 # Leave empty ('') to automatically use the first column.
 $fileNameColumn     = 'file'
+$salarisdossierValue = 'Salarisdossier'
 
 function Normalize-CsvHeaderName {
     param (
@@ -88,6 +89,70 @@ function Get-CsvDelimiter {
     return $bestDelimiter
 }
 
+function Get-NormalizedPeriod {
+    param (
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$PeriodValue
+    )
+
+    $trimmed = $PeriodValue.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return ''
+    }
+
+    $asInt = 0
+    if ([int]::TryParse($trimmed, [ref]$asInt)) {
+        return ('{0:D2}' -f $asInt)
+    }
+
+    if ($trimmed -match '^\d{2}$') {
+        return $trimmed
+    }
+
+    return ''
+}
+
+function New-SourcePeriodDirectoryIndex {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$RootPath
+    )
+
+    $index = @{}
+
+    $pendingDirectories = New-Object System.Collections.Generic.Stack[string]
+    $pendingDirectories.Push($RootPath)
+
+    while ($pendingDirectories.Count -gt 0) {
+        $currentDirectory = $pendingDirectories.Pop()
+
+        try {
+            foreach ($subDirectory in [System.IO.Directory]::EnumerateDirectories($currentDirectory, '*', [System.IO.SearchOption]::TopDirectoryOnly)) {
+                $pendingDirectories.Push($subDirectory)
+
+                $name = [System.IO.Path]::GetFileName($subDirectory)
+                if ($name -match '^.+-(\d{4})-(\d{2})$') {
+                    $year = $matches[1]
+                    $period = $matches[2]
+                    $key = "$year|$period"
+
+                    if (-not $index.ContainsKey($key)) {
+                        $index[$key] = New-Object System.Collections.Generic.List[string]
+                    }
+
+                    $index[$key].Add($subDirectory)
+                }
+            }
+        }
+        catch {
+            # Ignore inaccessible directories and continue scanning.
+        }
+    }
+
+    return $index
+}
+
 
 function Get-FilePathsRecursiveSafe {
     param (
@@ -142,6 +207,29 @@ function New-DestinationFileNameIndex {
     # -NoEnumerate prevents HashSet values from being expanded into the pipeline,
     # which can otherwise result in $null/empty-collection binding issues.
     Write-Output -NoEnumerate $existingNames
+}
+
+
+function Ensure-DestinationFileNameIndex {
+    param (
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        $IndexCandidate
+    )
+
+    if ($IndexCandidate -is [System.Collections.Generic.HashSet[string]]) {
+        return $IndexCandidate
+    }
+
+    if ($IndexCandidate -is [System.Array] -and $IndexCandidate.Count -gt 0) {
+        foreach ($item in $IndexCandidate) {
+            if ($item -is [System.Collections.Generic.HashSet[string]]) {
+                return $item
+            }
+        }
+    }
+
+    return [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 }
 
 function Get-UniqueDestinationPath {
@@ -238,13 +326,50 @@ if (-not $headerMap.ContainsKey($normalizedRequestedColumn)) {
 
 $resolvedFileNameColumn = $headerMap[$normalizedRequestedColumn]
 
-# Extract file names from the CSV.
-# Wrap in @(...) so a single result stays an array and is not treated as a string.
-$csvFileNames = @($rows |
+$resolvedCopyMoveColumn = $null
+foreach ($knownHeaderName in @('copy/move', 'copymove')) {
+    $normalizedHeaderName = Normalize-CsvHeaderName -HeaderName $knownHeaderName
+    if ($headerMap.ContainsKey($normalizedHeaderName)) {
+        $resolvedCopyMoveColumn = $headerMap[$normalizedHeaderName]
+        break
+    }
+}
+
+# Split CSV rows: legacy (file-name based) versus Salarisdossier (folder-based).
+$legacyRows = New-Object System.Collections.Generic.List[object]
+$salarisdossierRows = New-Object System.Collections.Generic.List[object]
+
+for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
+    $row = $rows[$rowIndex]
+
+    $copyMoveValue = if ($null -ne $resolvedCopyMoveColumn) {
+        ([string]($row.$resolvedCopyMoveColumn)).Trim()
+    }
+    else {
+        ''
+    }
+
+    if ($copyMoveValue -ieq $salarisdossierValue) {
+        $salarisdossierRows.Add([PSCustomObject]@{
+            RowIndex = $rowIndex + 1
+            ProductieJaar = ([string]$row.productieJaar).Trim()
+            ProductiePeriode = ([string]$row.productiePeriode).Trim()
+            ElementName = ([string]$row.ElementName).Trim()
+        })
+    }
+    else {
+        $legacyRows.Add($row)
+    }
+}
+
+# Extract file names from legacy rows.
+$csvFileNames = @($legacyRows |
     ForEach-Object { Resolve-FileNameFromCsvValue -Value ([string]($_.$resolvedFileNameColumn)) } |
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
 $totalCsvRows            = $rows.Count
+$totalLegacyRows         = $legacyRows.Count
+$totalSalarisdossierRows = $salarisdossierRows.Count
 $totalCsvFileNames       = $csvFileNames.Count
 $uniqueCsvFileNames      = @($csvFileNames | Sort-Object -Unique)
 $totalUniqueCsvFileNames = $uniqueCsvFileNames.Count
@@ -271,7 +396,7 @@ $scanCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
 $supportsEnumerationOptions = $null -ne ([type]::GetType('System.IO.EnumerationOptions', $false))
 
-$filePathEnumerator = if ($supportsEnumerationOptions) {
+$filePathEnumerator = if ($totalUniqueCsvFileNames -gt 0 -and $supportsEnumerationOptions) {
     $enumerationOptions = [System.IO.EnumerationOptions]::new()
     $enumerationOptions.RecurseSubdirectories = $true
     $enumerationOptions.IgnoreInaccessible = $true
@@ -279,9 +404,12 @@ $filePathEnumerator = if ($supportsEnumerationOptions) {
 
     [System.IO.Directory]::EnumerateFiles($sourceFolder, '*', $enumerationOptions)
 }
-else {
+elseif ($totalUniqueCsvFileNames -gt 0) {
     Write-Host "System.IO.EnumerationOptions is not available. Using compatibility scan mode for older PowerShell/.NET versions." -ForegroundColor Yellow
     Get-FilePathsRecursiveSafe -RootPath $sourceFolder
+}
+else {
+    @()
 }
 
 foreach ($fullPath in $filePathEnumerator) {
@@ -310,6 +438,13 @@ foreach ($fullPath in $filePathEnumerator) {
 
 Write-Progress -Id 1 -Activity "Scanning source files" -Completed
 
+$periodDirectoryIndex = @{}
+if ($totalSalarisdossierRows -gt 0) {
+    Write-Host ""
+    Write-Host "Building period directory index for Salarisdossier rows..." -ForegroundColor Cyan
+    $periodDirectoryIndex = New-SourcePeriodDirectoryIndex -RootPath $sourceFolder
+}
+
 # ----------------------------
 # Process CSV file names
 # ----------------------------
@@ -331,13 +466,7 @@ $log = New-Object System.Collections.Generic.List[object]
 $processStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 $progressCheckpoint = [System.Diagnostics.Stopwatch]::StartNew()
 
-$destinationNamesIndex = New-DestinationFileNameIndex -Folder $destinationFolder
-$destinationNamesIndex = if ($destinationNamesIndex -is [System.Collections.Generic.HashSet[string]]) {
-    $destinationNamesIndex
-}
-else {
-    [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-}
+$destinationNamesIndex = Ensure-DestinationFileNameIndex -IndexCandidate (New-DestinationFileNameIndex -Folder $destinationFolder)
 $destinationSuffixIndex = @{}
 
 for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
@@ -434,6 +563,121 @@ for ($i = 0; $i -lt $totalUniqueCsvFileNames; $i++) {
     }
 }
 
+foreach ($request in $salarisdossierRows) {
+    $jaar = $request.ProductieJaar
+    $periode = Get-NormalizedPeriod -PeriodValue $request.ProductiePeriode
+    $elementName = $request.ElementName
+
+    if ([string]::IsNullOrWhiteSpace($jaar) -or [string]::IsNullOrWhiteSpace($periode) -or [string]::IsNullOrWhiteSpace($elementName)) {
+        $notFoundCsvNames++
+        $log.Add([PSCustomObject]@{
+            FileName         = "Row $($request.RowIndex)"
+            Status           = "NotFound"
+            SourcePath       = $null
+            DestinationPath  = $null
+            Message          = "Salarisdossier row missing productieJaar/productiePeriode/ElementName"
+        })
+        continue
+    }
+
+    $periodKey = "$jaar|$periode"
+    if (-not $periodDirectoryIndex.ContainsKey($periodKey)) {
+        $notFoundCsvNames++
+        $log.Add([PSCustomObject]@{
+            FileName         = "Row $($request.RowIndex)"
+            Status           = "NotFound"
+            SourcePath       = $null
+            DestinationPath  = $null
+            Message          = "No source folder found for key $periodKey"
+        })
+        continue
+    }
+
+    $rowHadMatch = $false
+    $candidatePeriodFolders = $periodDirectoryIndex[$periodKey]
+
+    foreach ($periodFolder in $candidatePeriodFolders) {
+        $elementFolder = Join-Path -Path $periodFolder -ChildPath $elementName
+        if (-not (Test-Path -LiteralPath $elementFolder)) {
+            continue
+        }
+
+        $matchedFiles = @()
+        try {
+            $matchedFiles = @([System.IO.Directory]::EnumerateFiles($elementFolder, '*', [System.IO.SearchOption]::AllDirectories))
+        }
+        catch {
+            $errorsCount++
+            $log.Add([PSCustomObject]@{
+                FileName         = "Row $($request.RowIndex)"
+                Status           = "Error"
+                SourcePath       = $elementFolder
+                DestinationPath  = $null
+                Message          = $_.Exception.Message
+            })
+            continue
+        }
+
+        if ($matchedFiles.Count -eq 0) {
+            continue
+        }
+
+        $rowHadMatch = $true
+
+        foreach ($matchFullPath in $matchedFiles) {
+            $fileName = [System.IO.Path]::GetFileName($matchFullPath)
+            try {
+                $destinationPath = Get-UniqueDestinationPath `
+                    -Folder $destinationFolder `
+                    -FileName $fileName `
+                    -ExistingNames $destinationNamesIndex `
+                    -NextSuffixByKey $destinationSuffixIndex
+
+                if ($Action -eq 'Copy') {
+                    Copy-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
+                }
+                else {
+                    Move-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
+                }
+
+                $processedFilesCount++
+
+                $log.Add([PSCustomObject]@{
+                    FileName         = "Row $($request.RowIndex)"
+                    Status           = $actionVerbPastTense
+                    SourcePath       = $matchFullPath
+                    DestinationPath  = $destinationPath
+                    Message          = "Salarisdossier file $($actionVerbPastTense.ToLower()) successfully"
+                })
+            }
+            catch {
+                $errorsCount++
+                $log.Add([PSCustomObject]@{
+                    FileName         = "Row $($request.RowIndex)"
+                    Status           = "Error"
+                    SourcePath       = $matchFullPath
+                    DestinationPath  = $null
+                    Message          = $_.Exception.Message
+                })
+            }
+        }
+    }
+
+    if ($rowHadMatch) {
+        $matchedCsvNames++
+    }
+    else {
+        $notFoundCsvNames++
+        $log.Add([PSCustomObject]@{
+            FileName         = "Row $($request.RowIndex)"
+            Status           = "NotFound"
+            SourcePath       = $null
+            DestinationPath  = $null
+            Message          = "No files found for Salarisdossier row ($periodKey / $elementName)"
+        })
+    }
+}
+
 Write-Progress -Id 2 -Activity "Looking up and $actionVerbPresent files" -Completed
 
 # ----------------------------
@@ -457,6 +701,8 @@ $summaryLines = @(
     "CSV column requested             : $fileNameColumn"
     "CSV column resolved              : $resolvedFileNameColumn"
     "Total rows in CSV                : $totalCsvRows"
+    "Legacy rows in CSV               : $totalLegacyRows"
+    "Salarisdossier rows in CSV       : $totalSalarisdossierRows"
     "File names found in CSV          : $totalCsvFileNames"
     "Unique file names in CSV         : $totalUniqueCsvFileNames"
     "Files scanned in source folder   : $totalSourceFiles"
