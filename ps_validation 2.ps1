@@ -639,10 +639,13 @@ foreach ($request in $salarisdossierRows) {
 
         $rowHadMatch = $true
 
+        # Build a unique destination name: ceaNummer-jaar-periode-originalFileName
+        $destFileName = "$ceaNummer-$jaar-$periode-$targetFileName"
+
         try {
             $destinationPath = Get-UniqueDestinationPath `
                 -Folder $destinationFolder `
-                -FileName $targetFileName `
+                -FileName $destFileName `
                 -ExistingNames $destinationNamesIndex `
                 -NextSuffixByKey $destinationSuffixIndex
 
