@@ -364,6 +364,7 @@ for ($rowIndex = 0; $rowIndex -lt $rows.Count; $rowIndex++) {
     if ($copyMoveValue -ieq $salarisdossierValue) {
         $salarisdossierRows.Add([PSCustomObject]@{
             RowIndex = $rowIndex + 1
+            FileName = Resolve-FileNameFromCsvValue -Value ([string]($row.$resolvedFileNameColumn))
             ProductieJaar = ([string]$row.productieJaar).Trim()
             ProductiePeriode = ([string]$row.productiePeriode).Trim()
             ElementName = ([string]$row.ElementName).Trim()
@@ -579,6 +580,7 @@ foreach ($request in $salarisdossierRows) {
     $jaar = $request.ProductieJaar
     $periode = Get-NormalizedPeriod -PeriodValue $request.ProductiePeriode
     $elementName = $request.ElementName
+    $targetFileName = $request.FileName
 
     if ([string]::IsNullOrWhiteSpace($jaar) -or [string]::IsNullOrWhiteSpace($periode) -or [string]::IsNullOrWhiteSpace($elementName)) {
         $notFoundCsvNames++
@@ -588,6 +590,18 @@ foreach ($request in $salarisdossierRows) {
             SourcePath       = $null
             DestinationPath  = $null
             Message          = "Salarisdossier row missing productieJaar/productiePeriode/ElementName"
+        })
+        continue
+    }
+
+    if ([string]::IsNullOrWhiteSpace($targetFileName)) {
+        $notFoundCsvNames++
+        $log.Add([PSCustomObject]@{
+            FileName         = "Row $($request.RowIndex)"
+            Status           = "NotFound"
+            SourcePath       = $null
+            DestinationPath  = $null
+            Message          = "Salarisdossier row missing file name"
         })
         continue
     }
@@ -614,64 +628,47 @@ foreach ($request in $salarisdossierRows) {
             continue
         }
 
-        $matchedFiles = @()
+        # Look for the specific file from the CSV, not all files in the folder.
+        $candidatePath = Join-Path -Path $elementFolder -ChildPath $targetFileName
+        if (-not (Test-Path -LiteralPath $candidatePath)) {
+            continue
+        }
+
+        $rowHadMatch = $true
+
         try {
-            $matchedFiles = @([System.IO.Directory]::EnumerateFiles($elementFolder, '*', [System.IO.SearchOption]::AllDirectories))
+            $destinationPath = Get-UniqueDestinationPath `
+                -Folder $destinationFolder `
+                -FileName $targetFileName `
+                -ExistingNames $destinationNamesIndex `
+                -NextSuffixByKey $destinationSuffixIndex
+
+            if ($Action -eq 'Copy') {
+                Copy-Item -LiteralPath $candidatePath -Destination $destinationPath -Force
+            }
+            else {
+                Move-Item -LiteralPath $candidatePath -Destination $destinationPath -Force
+            }
+
+            $processedFilesCount++
+
+            $log.Add([PSCustomObject]@{
+                FileName         = "Row $($request.RowIndex)"
+                Status           = $actionVerbPastTense
+                SourcePath       = $candidatePath
+                DestinationPath  = $destinationPath
+                Message          = "Salarisdossier file $($actionVerbPastTense.ToLower()) successfully"
+            })
         }
         catch {
             $errorsCount++
             $log.Add([PSCustomObject]@{
                 FileName         = "Row $($request.RowIndex)"
                 Status           = "Error"
-                SourcePath       = $elementFolder
+                SourcePath       = $candidatePath
                 DestinationPath  = $null
                 Message          = $_.Exception.Message
             })
-            continue
-        }
-
-        if ($matchedFiles.Count -eq 0) {
-            continue
-        }
-
-        $rowHadMatch = $true
-
-        foreach ($matchFullPath in $matchedFiles) {
-            $fileName = [System.IO.Path]::GetFileName($matchFullPath)
-            try {
-                $destinationPath = Get-UniqueDestinationPath `
-                    -Folder $destinationFolder `
-                    -FileName $fileName `
-                    -ExistingNames $destinationNamesIndex `
-                    -NextSuffixByKey $destinationSuffixIndex
-
-                if ($Action -eq 'Copy') {
-                    Copy-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
-                }
-                else {
-                    Move-Item -LiteralPath $matchFullPath -Destination $destinationPath -Force
-                }
-
-                $processedFilesCount++
-
-                $log.Add([PSCustomObject]@{
-                    FileName         = "Row $($request.RowIndex)"
-                    Status           = $actionVerbPastTense
-                    SourcePath       = $matchFullPath
-                    DestinationPath  = $destinationPath
-                    Message          = "Salarisdossier file $($actionVerbPastTense.ToLower()) successfully"
-                })
-            }
-            catch {
-                $errorsCount++
-                $log.Add([PSCustomObject]@{
-                    FileName         = "Row $($request.RowIndex)"
-                    Status           = "Error"
-                    SourcePath       = $matchFullPath
-                    DestinationPath  = $null
-                    Message          = $_.Exception.Message
-                })
-            }
         }
     }
 
@@ -685,7 +682,7 @@ foreach ($request in $salarisdossierRows) {
             Status           = "NotFound"
             SourcePath       = $null
             DestinationPath  = $null
-            Message          = "No files found for Salarisdossier row ($periodKey / $elementName)"
+            Message          = "No files found for Salarisdossier row ($periodKey / $elementName / $targetFileName)"
         })
     }
 }
